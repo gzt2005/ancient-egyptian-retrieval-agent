@@ -1,0 +1,44 @@
+from pathlib import Path
+import json
+
+# AES JSON 文件夹路径
+aes_json_dir = Path(r"C:\Users\GE ZITONG\Desktop\egypt_agent_project\data_raw\aes\files\aes")
+
+print("JSON 文件夹是否存在：", aes_json_dir.exists())
+
+json_files = list(aes_json_dir.glob("*.json"))
+
+# 排除 schema 文件，只看真正语料文件
+json_files = [f for f in json_files if f.name != "aesschema.json"]
+
+print("语料 JSON 文件数量：", len(json_files))
+
+if not json_files:
+    print("没有找到语料 JSON 文件。")
+else:
+    sample_file = json_files[0]
+    print("\n正在读取样本文件：", sample_file.name)
+
+    with open(sample_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    print("\n最外层数据类型：", type(data))
+
+    if isinstance(data, dict):
+        print("\n最外层 keys：")
+        for key in data.keys():
+            print(" -", key)
+
+        print("\n前几个 key 的内容预览：")
+        for key, value in list(data.items())[:5]:
+            print("\n" + "=" * 60)
+            print("KEY:", key)
+            print("VALUE 类型:", type(value))
+            preview = json.dumps(value, ensure_ascii=False, indent=2)
+            print(preview[:2000])
+
+    elif isinstance(data, list):
+        print("\n列表长度：", len(data))
+        print("\n第一条数据预览：")
+        preview = json.dumps(data[0], ensure_ascii=False, indent=2)
+        print(preview[:3000])
