@@ -8,23 +8,10 @@ A web-based retrieval agent for Ancient Egyptian textual materials, designed for
   - Main Documents
   - Term Dictionary
   - Inverted File
-- Chinese query expansion for Ancient Egyptian topics
-- Ancient Egyptian transliteration normalization
+- Chinese query expansion
+- Ancient Egyptian transliteration search
 - English/German translation keyword search
-- Field-weighted ranking mechanism:
-  - lemma_forms
-  - normalized_transliteration
-  - mdc
-  - translation
-- Chinese explanation for retrieval evidence
-- Evidence-based result display with:
-  - translation
-  - transliteration
-  - lemmas
-  - MDC
-  - corpus
-  - date
-  - findspot
+- Evidence-based result display with transliteration, lemmas, corpus, date, and findspot
 
 ## Demo Queries
 
@@ -65,9 +52,3 @@ egypt_agent_project/
 
 - Field-weighted ranking mechanism prioritizing lemma, transliteration, MDC, and translation matches
 - Chinese evidence explanation based on matched terms and matched fields
-
-## Version
-
-### V1.1
-
-The current version adds field-weighted ranking and Chinese evidence explanation. The system no longer ranks results only by raw term frequency, but also considers the importance of matched fields such as lemma forms, normalized transliteration, MDC, and translations.

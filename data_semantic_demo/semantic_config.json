@@ -1,0 +1,8 @@
+{
+  "model_name": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "embedding_file": "C:\\Users\\GE ZITONG\\Desktop\\egypt_agent_project\\data_semantic_demo\\semantic_embeddings.npy",
+  "metadata_file": "C:\\Users\\GE ZITONG\\Desktop\\egypt_agent_project\\data_semantic_demo\\semantic_metadata.csv",
+  "num_docs": 8000,
+  "embedding_dim": 384,
+  "normalized": true
+}
