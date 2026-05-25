@@ -31,6 +31,11 @@ QUERY_EXPANSION_CSV = PROJECT_DIR / "data_demo" / "query_expansion.csv"
 def normalize_query_term(term: str) -> str:
     """
     将用户输入或扩展词归一化。
+    例如：
+    nṯr -> ntr
+    ḏd -> dd
+    ꜥnḫ -> anh
+    Wsjr -> wsjr
     """
     if not isinstance(term, str):
         return ""
@@ -70,6 +75,28 @@ def contains_chinese(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text))
 
 
+def generate_chinese_hint(query, matched_terms, matched_fields):
+    """
+    根据查询词、命中词和命中字段生成简单中文解释。
+    """
+    if not matched_terms:
+        matched_terms = "相关词项"
+
+    if not matched_fields:
+        matched_fields = "相关字段"
+
+    if contains_chinese(query):
+        return (
+            f"该结果与“{query}”主题相关，系统通过扩展词 {matched_terms} 命中原始语料。"
+            f"命中字段包括 {matched_fields}，可结合原始译文、古埃及转写、lemma 和 MDC 判断其主题相关性。"
+        )
+
+    return (
+        f"该结果命中检索词 {matched_terms}，命中字段包括 {matched_fields}。"
+        f"可结合原始译文、古埃及转写、lemma 和 MDC 判断其文本证据价值。"
+    )
+
+
 # =========================
 # 4. 缓存加载数据
 # =========================
@@ -80,18 +107,26 @@ def load_data():
     inverted_df = pd.read_csv(INVERTED_FILE_CSV, dtype=str, low_memory=False).fillna("")
     query_expansion_df = pd.read_csv(QUERY_EXPANSION_CSV, dtype=str).fillna("")
 
-    # 数值字段转回来，方便排序
+    # 数值字段转回来，方便排序和展示
     if "tf" in inverted_df.columns:
-        inverted_df["tf"] = pd.to_numeric(inverted_df["tf"], errors="coerce").fillna(0).astype(int)
+        inverted_df["tf"] = pd.to_numeric(
+            inverted_df["tf"], errors="coerce"
+        ).fillna(0).astype(int)
 
     if "token_count" in main_df.columns:
-        main_df["token_count"] = pd.to_numeric(main_df["token_count"], errors="coerce").fillna(0).astype(int)
+        main_df["token_count"] = pd.to_numeric(
+            main_df["token_count"], errors="coerce"
+        ).fillna(0).astype(int)
 
     if "df" in term_dict.columns:
-        term_dict["df"] = pd.to_numeric(term_dict["df"], errors="coerce").fillna(0).astype(int)
+        term_dict["df"] = pd.to_numeric(
+            term_dict["df"], errors="coerce"
+        ).fillna(0).astype(int)
 
     if "total_tf" in term_dict.columns:
-        term_dict["total_tf"] = pd.to_numeric(term_dict["total_tf"], errors="coerce").fillna(0).astype(int)
+        term_dict["total_tf"] = pd.to_numeric(
+            term_dict["total_tf"], errors="coerce"
+        ).fillna(0).astype(int)
 
     return main_df, term_dict, inverted_df, query_expansion_df
 
@@ -103,10 +138,16 @@ main_df, term_dict, inverted_df, query_expansion_df = load_data()
 # 5. 中文查询扩展
 # =========================
 def expand_chinese_query(query: str):
+    """
+    如果用户输入中文，则查询 query_expansion.csv，
+    将中文主题词扩展为英文、德文和古埃及转写词。
+    """
     query = query.strip()
 
+    # 精确匹配
     hit = query_expansion_df[query_expansion_df["query_zh"] == query]
 
+    # 包含匹配
     if len(hit) == 0:
         hit = query_expansion_df[
             query_expansion_df["query_zh"].apply(lambda x: x in query or query in x)
@@ -132,11 +173,15 @@ def expand_chinese_query(query: str):
 # 6. 单词 DIALOG 检索
 # =========================
 def dialog_search_single_term(term):
+    """
+    对单个 term 执行 DIALOG 风格检索，并加入字段加权排序。
+    """
     term_norm = normalize_query_term(term)
 
     if not term_norm:
         return pd.DataFrame(), None
 
+    # Step 1：查索引文档
     term_info = term_dict[term_dict["term"] == term_norm]
 
     if len(term_info) == 0:
@@ -145,16 +190,31 @@ def dialog_search_single_term(term):
     term_info_row = term_info.iloc[0]
     term_id = term_info_row["term_id"]
 
+    # Step 2：查倒排档
     postings = inverted_df[inverted_df["term_id"] == term_id].copy()
 
     if len(postings) == 0:
         return pd.DataFrame(), term_info_row
 
+    # Step 3：字段加权
+    # 让古埃及语核心字段优先于普通译文字段
+    field_weights = {
+        "lemma_forms": 5,
+        "normalized_transliteration": 4,
+        "mdc": 3,
+        "translation": 2
+    }
+
+    postings["field_weight"] = postings["field"].map(field_weights).fillna(1)
+    postings["weighted_tf"] = postings["tf"] * postings["field_weight"]
+
+    # Step 4：按 doc_id 聚合
     doc_scores = (
         postings
         .groupby("doc_id")
         .agg(
             total_tf=("tf", "sum"),
+            weighted_score=("weighted_tf", "sum"),
             matched_fields=("field", lambda x: ", ".join(sorted(set(x)))),
             positions=("positions", lambda x: " | ".join(map(str, x)))
         )
@@ -170,6 +230,11 @@ def dialog_search_single_term(term):
 # 7. 中文/普通统一检索
 # =========================
 def search(query, top_k=10):
+    """
+    支持中文主题词、英文关键词、古埃及转写词检索。
+    中文检索：先扩展词，再分别查倒排档，最后合并排序。
+    普通检索：直接查倒排档。
+    """
     query = query.strip()
 
     if contains_chinese(query):
@@ -214,6 +279,7 @@ def search(query, top_k=10):
             .groupby("doc_id")
             .agg(
                 total_tf=("total_tf", "sum"),
+                weighted_score=("weighted_score", "sum"),
                 matched_terms=("matched_term", lambda x: ", ".join(sorted(set(x)))),
                 matched_fields=("matched_fields", lambda x: ", ".join(sorted(set(", ".join(x).split(", "))))),
                 positions=("positions", lambda x: " || ".join(map(str, x)))
@@ -226,10 +292,11 @@ def search(query, top_k=10):
         )
 
         combined_grouped = combined_grouped.sort_values(
-            by=["matched_term_count", "total_tf"],
-            ascending=[False, False]
+            by=["matched_term_count", "weighted_score", "total_tf"],
+            ascending=[False, False, False]
         ).head(top_k)
 
+        # 回主文档，取完整文本信息
         results = combined_grouped.merge(main_df, on="doc_id", how="left")
 
         return {
@@ -256,10 +323,11 @@ def search(query, top_k=10):
             }
 
         doc_scores = doc_scores.sort_values(
-            by=["total_tf", "doc_id"],
-            ascending=[False, True]
+            by=["weighted_score", "total_tf", "doc_id"],
+            ascending=[False, False, True]
         ).head(top_k)
 
+        # 回主文档，取完整文本信息
         results = doc_scores.merge(main_df, on="doc_id", how="left")
 
         return {
@@ -276,7 +344,10 @@ def search(query, top_k=10):
 # 8. 页面主体
 # =========================
 st.title("𓂀 古埃及文字检索智能体")
-st.caption("基于 DIALOG 风格的“主文档—索引文档—倒排档”结构，支持中文主题扩展、古埃及转写检索与原始语料证据返回。")
+st.caption(
+    "基于 DIALOG 风格的“主文档—索引文档—倒排档”结构，"
+    "支持中文主题扩展、古埃及转写检索与原始语料证据返回。"
+)
 
 with st.sidebar:
     st.header("系统信息")
@@ -305,6 +376,7 @@ with st.sidebar:
     - king
     """)
 
+
 query = st.text_input(
     "请输入检索词",
     placeholder="例如：神、奥西里斯、国王、ntr、wsjr、osiris"
@@ -313,6 +385,7 @@ query = st.text_input(
 top_k = st.slider("返回结果数量", min_value=3, max_value=20, value=10)
 
 search_button = st.button("开始检索", type="primary")
+
 
 if search_button:
     if not query.strip():
@@ -328,7 +401,10 @@ if search_button:
         col3.metric("返回结果数", len(output["results"]))
 
         st.write("**原始查询：**", output["query"])
-        st.write("**扩展词：**", ", ".join(output["expanded_terms"]) if output["expanded_terms"] else "无")
+        st.write(
+            "**扩展词：**",
+            ", ".join(output["expanded_terms"]) if output["expanded_terms"] else "无"
+        )
 
         if output["explanation"]:
             st.info(output["explanation"])
@@ -360,17 +436,33 @@ if search_button:
                     st.markdown(f"### 结果 {idx + 1}｜{row['doc_id']}")
 
                     c1, c2, c3, c4 = st.columns(4)
+
                     c1.write("**corpus**")
                     c1.write(row["corpus"])
+
                     c2.write("**date**")
                     c2.write(row["date"])
+
                     c3.write("**findspot**")
                     c3.write(row["findspot"])
-                    c4.write("**total_tf**")
-                    c4.write(row["total_tf"])
 
-                    st.write("**命中词：**", row.get("matched_terms", row.get("matched_term", "")))
-                    st.write("**匹配字段：**", row["matched_fields"])
+                    c4.write("**加权分数**")
+                    c4.write(row.get("weighted_score", "未计算"))
+
+                    matched_terms = row.get("matched_terms", row.get("matched_term", ""))
+                    matched_fields = row.get("matched_fields", "")
+
+                    st.write("**命中词：**", matched_terms)
+                    st.write("**匹配字段：**", matched_fields)
+                    st.write("**原始词频 total_tf：**", row["total_tf"])
+
+                    chinese_hint = generate_chinese_hint(
+                        query=output["query"],
+                        matched_terms=matched_terms,
+                        matched_fields=matched_fields
+                    )
+
+                    st.info(chinese_hint)
 
                     st.markdown("**原始译文：**")
                     st.write(row["translation"])
@@ -387,5 +479,3 @@ if search_button:
 
                         st.markdown("**mdc：**")
                         st.code(row["mdc"], language="text")
-
-                    st.caption("中文提示：该结果为原始语料证据，可结合命中词、译文和古埃及转写判断其主题相关性。")
