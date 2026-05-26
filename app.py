@@ -1,5 +1,7 @@
 from pathlib import Path
 import re
+import time
+import sqlite3
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -10,7 +12,7 @@ from sentence_transformers import SentenceTransformer
 # 1. 页面设置
 # =========================
 st.set_page_config(
-    page_title="古埃及文字检索智能体",
+    page_title="古埃及文字智能检索系统",
     page_icon="𓂀",
     layout="wide"
 )
@@ -21,16 +23,15 @@ st.set_page_config(
 # =========================
 PROJECT_DIR = Path(__file__).parent
 
-MAIN_DOCS_CSV = PROJECT_DIR / "data_demo" / "main_documents.csv"
-TERM_DICTIONARY_CSV = PROJECT_DIR / "data_demo" / "term_dictionary.csv"
-INVERTED_FILE_CSV = PROJECT_DIR / "data_demo" / "inverted_file.csv"
-QUERY_EXPANSION_CSV = PROJECT_DIR / "data_demo" / "query_expansion.csv"
+DB_PATH = PROJECT_DIR / "database_demo" / "egypt_demo.db"
 
 SEMANTIC_DIR = PROJECT_DIR / "data_semantic_demo"
 SEMANTIC_EMBEDDINGS_PATH = SEMANTIC_DIR / "semantic_embeddings.npy"
 SEMANTIC_METADATA_PATH = SEMANTIC_DIR / "semantic_metadata.csv"
-
 SEMANTIC_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+EVALUATION_DIR = PROJECT_DIR / "evaluation_results"
+EVALUATION_RESULTS_CSV = EVALUATION_DIR / "evaluation_results.csv"
 
 
 # =========================
@@ -105,40 +106,41 @@ def generate_chinese_hint(query, matched_terms, matched_fields):
     )
 
 
+def get_sqlite_connection():
+    """
+    获取 SQLite 数据库连接。
+    """
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"数据库文件不存在：{DB_PATH}")
+    return sqlite3.connect(DB_PATH)
+
+
 # =========================
-# 4. 缓存加载倒排检索数据
+# 4. SQLite 系统信息加载
 # =========================
-@st.cache_data(show_spinner="正在加载主文档、索引文档和倒排档，请稍等...")
-def load_data():
-    main_df = pd.read_csv(MAIN_DOCS_CSV, dtype=str).fillna("")
-    term_dict = pd.read_csv(TERM_DICTIONARY_CSV, dtype=str).fillna("")
-    inverted_df = pd.read_csv(INVERTED_FILE_CSV, dtype=str, low_memory=False).fillna("")
-    query_expansion_df = pd.read_csv(QUERY_EXPANSION_CSV, dtype=str).fillna("")
+@st.cache_data(show_spinner="正在读取 SQLite 数据库信息...")
+def load_sqlite_counts():
+    """
+    从 SQLite 数据库读取各表记录数量。
+    """
+    if not DB_PATH.exists():
+        return {
+            "main_documents": 0,
+            "term_dictionary": 0,
+            "inverted_file": 0,
+            "query_expansion": 0
+        }
 
-    if "tf" in inverted_df.columns:
-        inverted_df["tf"] = pd.to_numeric(
-            inverted_df["tf"], errors="coerce"
-        ).fillna(0).astype(int)
+    conn = sqlite3.connect(DB_PATH)
 
-    if "token_count" in main_df.columns:
-        main_df["token_count"] = pd.to_numeric(
-            main_df["token_count"], errors="coerce"
-        ).fillna(0).astype(int)
-
-    if "df" in term_dict.columns:
-        term_dict["df"] = pd.to_numeric(
-            term_dict["df"], errors="coerce"
-        ).fillna(0).astype(int)
-
-    if "total_tf" in term_dict.columns:
-        term_dict["total_tf"] = pd.to_numeric(
-            term_dict["total_tf"], errors="coerce"
-        ).fillna(0).astype(int)
-
-    return main_df, term_dict, inverted_df, query_expansion_df
-
-
-main_df, term_dict, inverted_df, query_expansion_df = load_data()
+    try:
+        counts = {}
+        for table in ["main_documents", "term_dictionary", "inverted_file", "query_expansion"]:
+            cursor = conn.execute(f"SELECT COUNT(*) FROM {table};")
+            counts[table] = cursor.fetchone()[0]
+        return counts
+    finally:
+        conn.close()
 
 
 # =========================
@@ -157,30 +159,73 @@ def load_semantic_index():
 
 
 # =========================
-# 5. 中文查询扩展
+# 4.2 缓存加载系统测评结果
 # =========================
-def expand_chinese_query(query: str):
+@st.cache_data(show_spinner="正在加载系统性能测评结果...")
+def load_evaluation_results():
+    if not EVALUATION_RESULTS_CSV.exists():
+        return pd.DataFrame()
+
+    eval_df = pd.read_csv(EVALUATION_RESULTS_CSV, dtype=str).fillna("")
+
+    if "elapsed_time_sec" in eval_df.columns:
+        eval_df["elapsed_time_sec"] = pd.to_numeric(
+            eval_df["elapsed_time_sec"],
+            errors="coerce"
+        ).fillna(0)
+
+    if "result_count" in eval_df.columns:
+        eval_df["result_count"] = pd.to_numeric(
+            eval_df["result_count"],
+            errors="coerce"
+        ).fillna(0).astype(int)
+
+    return eval_df
+
+
+# =========================
+# 5. 中文查询扩展：SQLite 版
+# =========================
+def expand_chinese_query_sqlite(conn, query: str):
     """
-    如果用户输入中文，则查询 query_expansion.csv，
-    将中文主题词扩展为英文、德文和古埃及转写词。
+    从 SQLite 的 query_expansion 表中读取中文查询扩展词。
     """
     query = query.strip()
 
-    hit = query_expansion_df[query_expansion_df["query_zh"] == query]
+    exact_hit = pd.read_sql_query(
+        """
+        SELECT *
+        FROM query_expansion
+        WHERE query_zh = ?
+        LIMIT 1;
+        """,
+        conn,
+        params=(query,)
+    )
 
-    if len(hit) == 0:
-        hit = query_expansion_df[
-            query_expansion_df["query_zh"].apply(lambda x: x in query or query in x)
+    if len(exact_hit) > 0:
+        row = exact_hit.iloc[0]
+    else:
+        all_expansion = pd.read_sql_query(
+            """
+            SELECT *
+            FROM query_expansion;
+            """,
+            conn
+        ).fillna("")
+
+        fuzzy_hit = all_expansion[
+            all_expansion["query_zh"].apply(lambda x: x in query or query in x)
         ]
 
-    if len(hit) == 0:
-        return [], "未在中文查询扩展表中找到该主题。"
+        if len(fuzzy_hit) == 0:
+            return [], "未在中文查询扩展表中找到该主题。"
 
-    row = hit.iloc[0]
+        row = fuzzy_hit.iloc[0]
 
     expanded_terms = [
         normalize_query_term(t)
-        for t in str(row["expanded_terms"]).split(",")
+        for t in str(row.get("expanded_terms", "")).split(",")
         if normalize_query_term(t)
     ]
 
@@ -190,18 +235,28 @@ def expand_chinese_query(query: str):
 
 
 # =========================
-# 6. 单词 DIALOG 检索
+# 6. 单词 DIALOG 检索：SQLite 版
 # =========================
-def dialog_search_single_term(term):
+def dialog_search_single_term_sqlite(conn, term):
     """
-    对单个 term 执行 DIALOG 风格检索，并加入字段加权排序。
+    对单个 term 执行 SQLite-backed DIALOG 风格检索，并加入字段加权排序。
     """
     term_norm = normalize_query_term(term)
 
     if not term_norm:
         return pd.DataFrame(), None
 
-    term_info = term_dict[term_dict["term"] == term_norm]
+    # 1. 查索引文档 term_dictionary
+    term_info = pd.read_sql_query(
+        """
+        SELECT term_id, term, df, total_tf, fields
+        FROM term_dictionary
+        WHERE term = ?
+        LIMIT 1;
+        """,
+        conn,
+        params=(term_norm,)
+    )
 
     if len(term_info) == 0:
         return pd.DataFrame(), None
@@ -209,11 +264,23 @@ def dialog_search_single_term(term):
     term_info_row = term_info.iloc[0]
     term_id = term_info_row["term_id"]
 
-    postings = inverted_df[inverted_df["term_id"] == term_id].copy()
+    # 2. 查倒排档 inverted_file
+    postings = pd.read_sql_query(
+        """
+        SELECT term_id, term, doc_id, field, tf, positions
+        FROM inverted_file
+        WHERE term_id = ?;
+        """,
+        conn,
+        params=(term_id,)
+    )
 
     if len(postings) == 0:
         return pd.DataFrame(), term_info_row
 
+    postings["tf"] = pd.to_numeric(postings["tf"], errors="coerce").fillna(0).astype(int)
+
+    # 3. 字段加权
     field_weights = {
         "lemma_forms": 5,
         "normalized_transliteration": 4,
@@ -224,6 +291,7 @@ def dialog_search_single_term(term):
     postings["field_weight"] = postings["field"].map(field_weights).fillna(1)
     postings["weighted_tf"] = postings["tf"] * postings["field_weight"]
 
+    # 4. 聚合 doc_id
     doc_scores = (
         postings
         .groupby("doc_id")
@@ -241,44 +309,107 @@ def dialog_search_single_term(term):
     return doc_scores, term_info_row
 
 
+def fetch_main_documents_sqlite(conn, doc_scores):
+    """
+    根据 doc_scores 中的 doc_id 回主文档表取完整文本信息。
+    """
+    if len(doc_scores) == 0:
+        return pd.DataFrame()
+
+    doc_ids = doc_scores["doc_id"].tolist()
+    placeholders = ",".join(["?"] * len(doc_ids))
+
+    main_docs = pd.read_sql_query(
+        f"""
+        SELECT *
+        FROM main_documents
+        WHERE doc_id IN ({placeholders});
+        """,
+        conn,
+        params=doc_ids
+    ).fillna("")
+
+    results = doc_scores.merge(main_docs, on="doc_id", how="left")
+
+    return results
+
+
 # =========================
-# 7. 关键词检索：中文/普通统一检索
+# 7. 关键词检索：SQLite 版
 # =========================
 def keyword_search(query, top_k=10):
     """
+    SQLite-backed 关键词检索。
     支持中文主题词、英文关键词、古埃及转写词检索。
-    中文检索：先扩展词，再分别查倒排档，最后合并排序。
-    普通检索：直接查倒排档。
     """
     query = query.strip()
 
-    if contains_chinese(query):
-        expanded_terms, explanation = expand_chinese_query(query)
+    conn = get_sqlite_connection()
 
-        if not expanded_terms:
-            return {
-                "query": query,
-                "mode": "关键词检索",
-                "sub_mode": "中文检索",
-                "expanded_terms": [],
-                "explanation": explanation,
-                "term_infos": [],
-                "results": pd.DataFrame()
-            }
+    try:
+        if contains_chinese(query):
+            expanded_terms, explanation = expand_chinese_query_sqlite(conn, query)
 
-        all_doc_scores = []
-        term_infos = []
+            if not expanded_terms:
+                return {
+                    "query": query,
+                    "mode": "关键词检索",
+                    "sub_mode": "中文检索",
+                    "expanded_terms": [],
+                    "explanation": explanation,
+                    "term_infos": [],
+                    "results": pd.DataFrame()
+                }
 
-        for term in expanded_terms:
-            doc_scores, term_info = dialog_search_single_term(term)
+            all_doc_scores = []
+            term_infos = []
 
-            if term_info is not None:
-                term_infos.append(term_info)
+            for term in expanded_terms:
+                doc_scores, term_info = dialog_search_single_term_sqlite(conn, term)
 
-            if len(doc_scores) > 0:
-                all_doc_scores.append(doc_scores)
+                if term_info is not None:
+                    term_infos.append(term_info)
 
-        if not all_doc_scores:
+                if len(doc_scores) > 0:
+                    all_doc_scores.append(doc_scores)
+
+            if not all_doc_scores:
+                return {
+                    "query": query,
+                    "mode": "关键词检索",
+                    "sub_mode": "中文检索",
+                    "expanded_terms": expanded_terms,
+                    "explanation": explanation,
+                    "term_infos": term_infos,
+                    "results": pd.DataFrame()
+                }
+
+            combined = pd.concat(all_doc_scores, ignore_index=True)
+
+            combined_grouped = (
+                combined
+                .groupby("doc_id")
+                .agg(
+                    total_tf=("total_tf", "sum"),
+                    weighted_score=("weighted_score", "sum"),
+                    matched_terms=("matched_term", lambda x: ", ".join(sorted(set(x)))),
+                    matched_fields=("matched_fields", lambda x: ", ".join(sorted(set(", ".join(x).split(", "))))),
+                    positions=("positions", lambda x: " || ".join(map(str, x)))
+                )
+                .reset_index()
+            )
+
+            combined_grouped["matched_term_count"] = combined_grouped["matched_terms"].apply(
+                lambda x: len(x.split(", ")) if isinstance(x, str) and x else 0
+            )
+
+            combined_grouped = combined_grouped.sort_values(
+                by=["matched_term_count", "weighted_score", "total_tf"],
+                ascending=[False, False, False]
+            ).head(top_k)
+
+            results = fetch_main_documents_sqlite(conn, combined_grouped)
+
             return {
                 "query": query,
                 "mode": "关键词检索",
@@ -286,50 +417,32 @@ def keyword_search(query, top_k=10):
                 "expanded_terms": expanded_terms,
                 "explanation": explanation,
                 "term_infos": term_infos,
-                "results": pd.DataFrame()
+                "results": results
             }
 
-        combined = pd.concat(all_doc_scores, ignore_index=True)
+        else:
+            term_norm = normalize_query_term(query)
 
-        combined_grouped = (
-            combined
-            .groupby("doc_id")
-            .agg(
-                total_tf=("total_tf", "sum"),
-                weighted_score=("weighted_score", "sum"),
-                matched_terms=("matched_term", lambda x: ", ".join(sorted(set(x)))),
-                matched_fields=("matched_fields", lambda x: ", ".join(sorted(set(", ".join(x).split(", "))))),
-                positions=("positions", lambda x: " || ".join(map(str, x)))
-            )
-            .reset_index()
-        )
+            doc_scores, term_info = dialog_search_single_term_sqlite(conn, term_norm)
 
-        combined_grouped["matched_term_count"] = combined_grouped["matched_terms"].apply(
-            lambda x: len(x.split(", ")) if isinstance(x, str) and x else 0
-        )
+            if len(doc_scores) == 0:
+                return {
+                    "query": query,
+                    "mode": "关键词检索",
+                    "sub_mode": "普通检索",
+                    "expanded_terms": [term_norm],
+                    "explanation": "",
+                    "term_infos": [term_info] if term_info is not None else [],
+                    "results": pd.DataFrame()
+                }
 
-        combined_grouped = combined_grouped.sort_values(
-            by=["matched_term_count", "weighted_score", "total_tf"],
-            ascending=[False, False, False]
-        ).head(top_k)
+            doc_scores = doc_scores.sort_values(
+                by=["weighted_score", "total_tf", "doc_id"],
+                ascending=[False, False, True]
+            ).head(top_k)
 
-        results = combined_grouped.merge(main_df, on="doc_id", how="left")
+            results = fetch_main_documents_sqlite(conn, doc_scores)
 
-        return {
-            "query": query,
-            "mode": "关键词检索",
-            "sub_mode": "中文检索",
-            "expanded_terms": expanded_terms,
-            "explanation": explanation,
-            "term_infos": term_infos,
-            "results": results
-        }
-
-    else:
-        term_norm = normalize_query_term(query)
-        doc_scores, term_info = dialog_search_single_term(term_norm)
-
-        if len(doc_scores) == 0:
             return {
                 "query": query,
                 "mode": "关键词检索",
@@ -337,25 +450,11 @@ def keyword_search(query, top_k=10):
                 "expanded_terms": [term_norm],
                 "explanation": "",
                 "term_infos": [term_info] if term_info is not None else [],
-                "results": pd.DataFrame()
+                "results": results
             }
 
-        doc_scores = doc_scores.sort_values(
-            by=["weighted_score", "total_tf", "doc_id"],
-            ascending=[False, False, True]
-        ).head(top_k)
-
-        results = doc_scores.merge(main_df, on="doc_id", how="left")
-
-        return {
-            "query": query,
-            "mode": "关键词检索",
-            "sub_mode": "普通检索",
-            "expanded_terms": [term_norm],
-            "explanation": "",
-            "term_infos": [term_info] if term_info is not None else [],
-            "results": results
-        }
+    finally:
+        conn.close()
 
 
 # =========================
@@ -407,28 +506,33 @@ def semantic_search(query, top_k=10):
 # =========================
 # 9. 页面主体
 # =========================
-st.title("𓂀 古埃及文字检索智能体")
+st.title("𓂀 古埃及文字智能检索系统")
 st.caption(
-    "基于 DIALOG 风格的“主文档—索引文档—倒排档”结构，"
-    "支持中文主题扩展、古埃及转写检索、字段加权排序与 AI 语义检索。"
+    "Version 1.0｜基于 DIALOG 风格的“主文档—索引文档—倒排档”结构，"
+    "支持 SQLite 关键词检索、中文主题扩展、字段加权排序、AI 语义检索与系统性能测评。"
 )
+
+system_counts = load_sqlite_counts()
 
 with st.sidebar:
     st.header("系统信息")
-    st.write("主文档数量：", len(main_df))
-    st.write("索引词条数量：", len(term_dict))
-    st.write("倒排记录数量：", len(inverted_df))
-    st.write("中文主题数量：", len(query_expansion_df))
+    st.write("系统版本：", "Version 1.0")
+    st.write("数据库状态：", "已连接" if DB_PATH.exists() else "未找到")
+    st.write("主文档数量：", system_counts.get("main_documents", 0))
+    st.write("索引词条数量：", system_counts.get("term_dictionary", 0))
+    st.write("倒排记录数量：", system_counts.get("inverted_file", 0))
+    st.write("中文主题数量：", system_counts.get("query_expansion", 0))
 
     if SEMANTIC_EMBEDDINGS_PATH.exists() and SEMANTIC_METADATA_PATH.exists():
-        try:
-            semantic_metadata_preview = pd.read_csv(SEMANTIC_METADATA_PATH, dtype=str, nrows=5)
-            st.write("语义索引状态：", "已加载")
-            st.write("语义索引规模：", "8000 条")
-        except Exception:
-            st.write("语义索引状态：", "存在但未检查")
+        st.write("语义索引状态：", "已加载")
+        st.write("语义索引规模：", "8000 条")
     else:
         st.write("语义索引状态：", "未找到")
+
+    if EVALUATION_RESULTS_CSV.exists():
+        st.write("性能测评状态：", "已生成")
+    else:
+        st.write("性能测评状态：", "未生成")
 
     st.divider()
 
@@ -471,17 +575,22 @@ if search_button:
     if not query.strip():
         st.warning("请输入检索词或自然语言问题。")
     else:
+        start_time = time.perf_counter()
+
         if search_mode == "关键词检索":
             output = keyword_search(query, top_k=top_k)
         else:
             output = semantic_search(query, top_k=top_k)
 
+        elapsed_time = time.perf_counter() - start_time
+
         st.subheader("检索概览")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("检索模式", output["mode"])
         col2.metric("子模式", output.get("sub_mode", ""))
         col3.metric("返回结果数", len(output["results"]))
+        col4.metric("检索耗时", f"{elapsed_time:.3f} 秒")
 
         st.write("**原始查询：**", output["query"])
 
@@ -577,3 +686,71 @@ if search_button:
 
                         st.markdown("**mdc：**")
                         st.code(row.get("mdc", ""), language="text")
+
+
+# =========================
+# 10. 系统性能测评展示
+# =========================
+st.divider()
+
+with st.expander("系统性能测评", expanded=False):
+    st.markdown(
+        """
+        本模块用于展示系统批量性能测评结果，主要比较关键词检索与 AI 语义检索在响应时间、
+        返回结果数量和 Top-1 文档等方面的表现。
+        """
+    )
+
+    eval_df = load_evaluation_results()
+
+    if len(eval_df) == 0:
+        st.warning(
+            "尚未找到性能测评结果文件。请先运行 "
+            "`src/evaluate_search_performance.py` 生成 evaluation_results.csv。"
+        )
+    else:
+        st.subheader("测评数据概览")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("测试查询数量", len(eval_df))
+        c2.metric("检索模式数量", eval_df["mode"].nunique())
+        c3.metric("平均返回结果数", round(eval_df["result_count"].mean(), 2))
+
+        st.subheader("不同检索模式平均耗时")
+
+        avg_time_df = (
+            eval_df
+            .groupby("mode", as_index=False)["elapsed_time_sec"]
+            .mean()
+            .rename(columns={"elapsed_time_sec": "avg_elapsed_time_sec"})
+        )
+
+        avg_time_df["avg_elapsed_time_sec"] = avg_time_df["avg_elapsed_time_sec"].round(4)
+
+        st.dataframe(avg_time_df, use_container_width=True)
+
+        st.subheader("详细测评结果")
+
+        display_cols = [
+            "mode",
+            "query",
+            "top_k",
+            "elapsed_time_sec",
+            "result_count",
+            "top_doc_id",
+            "top_score",
+            "top_corpus",
+            "top_translation_preview"
+        ]
+
+        display_cols = [c for c in display_cols if c in eval_df.columns]
+
+        st.dataframe(
+            eval_df[display_cols],
+            use_container_width=True
+        )
+
+        st.info(
+            "说明：AI 语义检索的批量测评结果为模型预热后的热启动检索耗时；"
+            "网页端首次语义检索可能包含模型加载和语义索引加载时间，因此首次耗时会更长。"
+        )
