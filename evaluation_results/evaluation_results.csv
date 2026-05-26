@@ -1,0 +1,12 @@
+﻿mode,query,top_k,elapsed_time_sec,result_count,top_doc_id,top_score,top_corpus,top_translation_preview
+关键词检索,神,10,0.1357,10,D057169,112.0,sawlit,"Deine Würde ist (?) unter den Göttern in deinem Namen von: vollkommener Gott, Wenen-nefer, Herr der Götter, vollkommener"
+关键词检索,奥西里斯,10,0.1109,10,D098363,104.0,tb,"Oh, Thot, der Osiris gegen seine Feinde rechtfertigt, mögest du Osiris NN, gerechtfertigt, gegen seine Feinde rechtferti"
+关键词检索,太阳神,10,0.1628,10,D061465,90.0,sawlit,"""Der König [und Herr der beiden Länder 𓍹Nebmaatre Meriamun𓍺, Sohn des Re 𓍹Ramses Amunherchepeschef], Gott und Herrscher "
+关键词检索,ntr,10,0.0392,10,D053238,247.0,bbawtotenlit,"Zu rezitieren für den Osiris, Gottesvater (und) Prophet von Amun-Re-König-der-Götter, Prophet von Amun-dem-Spitzhörnigen"
+关键词检索,wsjr,10,0.0354,10,D098363,96.0,tb,"Oh, Thot, der Osiris gegen seine Feinde rechtfertigt, mögest du Osiris NN, gerechtfertigt, gegen seine Feinde rechtferti"
+关键词检索,osiris,10,0.0313,10,D053238,8.0,bbawtotenlit,"Zu rezitieren für den Osiris, Gottesvater (und) Prophet von Amun-Re-König-der-Götter, Prophet von Amun-dem-Spitzhörnigen"
+AI语义检索,太阳神和国王,10,0.0197,10,D095853,0.6613466739654541,tb,"Sei gegrüßt, Sachmet, Bastet, Auge des Re, Gebieterin der Götter, die die Schwinge genommen hat, Herrin des roten Stoffs"
+AI语义检索,Osiris and afterlife,10,0.0201,10,D053240,0.6469927430152893,bbawtotenlit,"Ritual zur Verklärung des Osiris in der Nekropole, (zu) vollziehen im Tempel von Osiris-Chontamenti, dem Großen Gott, He"
+AI语义检索,offering rituals,10,0.0129,10,D052883,0.6205792427062988,bbawtotenlit,"Ritual zur Verklärung des Osiris in der Nekropole, (zu) vollziehen im Tempel [von Osiris-Chontamenti, dem Großen Gott], "
+AI语义检索,texts about gods and kingship,10,0.015,10,D095853,0.7016891241073608,tb,"Sei gegrüßt, Sachmet, Bastet, Auge des Re, Gebieterin der Götter, die die Schwinge genommen hat, Herrin des roten Stoffs"
+AI语义检索,enemies of Osiris,10,0.0187,10,D095246,0.6645669937133789,tb,"Oh Thot, der Osiris gegen seine Feinde rechtfertigt, rechtfertige den Osiris NN gegen seinen Feind vor dem großen Gerich"
